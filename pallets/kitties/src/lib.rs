@@ -6,14 +6,27 @@ pub use pallet::*;
 use sp_io::hashing::blake2_128;
 use sp_runtime::ArithmeticError;
 
+#[derive(Encode, Decode, Clone, Copy, RuntimeDebug, PartialEq, Eq)]
+pub enum KittyGender {
+	Male,
+	Female,
+}
+
 // Struct for holding Kitty information.
 // encode and decode: transform into binary data
 // RuntimeDebug: allow to print the format of the kitty struct
 // PartialEq to compare Kitty
-#[derive(Encode, Decode, Clone, RuntimeDebug, PartialEq)]
-pub struct Kitty<Hash> {
-    dna: [u8; 16],
-    gender: Gender,
+#[derive(Encode, Decode, Clone, RuntimeDebug, PartialEq, Eq)]
+pub struct Kitty(pub [u8; 16]);
+
+impl Kitty {
+	pub fn gender(&self) -> KittyGender {
+		if self.0[0] % 2 == 0 {
+			KittyGender::Male
+		} else {
+			KittyGender::Female
+		}
+	}
 }
 
 // Enum declaration for Gender.
@@ -38,8 +51,6 @@ pub mod pallet {
     #[pallet::config]
     pub trait Config: frame_system::Config + pallet_randomness_collective_flip::Config {
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
-        /// The type of Randomness we want to specify for this pallet.
-		type KittyRandomness: Randomness<Self::Hash, Self::BlockNumber>;
     }
 
     // blake2 128 bit secure hasher is the default to keep it simple
@@ -52,7 +63,7 @@ pub mod pallet {
         T::AccountId,
         Blake2_128Concat,
         u32,
-        Kitty<T::Hash>,
+        Kitty,
         OptionQuery,
     >;
 
@@ -66,7 +77,8 @@ pub mod pallet {
     #[pallet::metadata(T::AccountId = "AccountId")]
     pub enum Event<T: Config> {
         /// A kitty is created. \[owner, kitty_id, kitty\]
-        KittyCreated(T::AccountId, u32, Kitty<T::Hash>),
+        KittyCreated(T::AccountId, u32, Kitty),
+        KittyBred(T::AccountId, u32, Kitty),
     }
 
     #[pallet::pallet]
@@ -77,7 +89,8 @@ pub mod pallet {
     #[pallet::error]
     pub enum Error<T> {
         KittiesIdOverflow,
-        KittyNotExist,
+        SameGender,
+        InvalidKittyId,
     }
 
     #[pallet::call]
@@ -115,48 +128,55 @@ pub mod pallet {
                 Ok(())
             })?;
         }
-    }
 
-    // Helper function for Kitty struct
-    impl<T: Config> Kitty<T> {
-        pub fn gender(dna: T::Hash) -> Gender {
-            if dna.as_ref()[0] % 2 == 0 {
-                Gender::Male
-            } else {
-                Gender::Female
-            }
-        }
+        /// Breed kitties
+		#[pallet::weight(1000)]
+		pub fn breed(origin: OriginFor<T>, kitty_id_1: u32, kitty_id_2: u32) -> DispatchResult {
+			let sender = ensure_signed(origin)?;
+			let kitty1 = Self::kitties(&sender, kitty_id_1).ok_or(Error::<T>::InvalidKittyId)?;
+			let kitty2 = Self::kitties(&sender, kitty_id_2).ok_or(Error::<T>::InvalidKittyId)?;
+
+			ensure!(kitty1.gender() != kitty2.gender(), Error::<T>::SameGender);
+
+			let kitty_id = Self::get_next_kitty_id()?;
+
+			let kitty1_dna = kitty1.0;
+			let kitty2_dna = kitty2.0;
+
+			let selector = Self::random_value(&sender);
+			let mut new_dna = [0u8; 16];
+
+			// Combine parents and selector to create new kitty
+			for i in 0..kitty1_dna.len() {
+				new_dna[i] = (selector[i] & kitty1_dna[i]) | (!selector[i] & kitty2_dna[i]);
+			}
+
+			let new_kitty = Kitty(new_dna);
+
+			Kitties::<T>::insert(&sender, kitty_id, &new_kitty);
+
+			Self::deposit_event(Event::KittyBred(sender, kitty_id, new_kitty));
+
+			Ok(())
+		}
     }
 
     impl<T: Config> Pallet<T> {
-        // Generate a random gender value
-        fn gen_gender() -> Gender {
-            let random = T::KittyRandomness::random(&b"gender"[..]).0;
-            match random.as_ref()[0] % 2 {
-                0 => Gender::Male,
-                _ => Gender::Female,
-            }
+        fn get_next_kitty_id() -> Result<u32, DispatchError> {
+            NextKittyId::<T>::try_mutate(|next_id| -> Result<u32, DispatchError> {
+                let current_id = *next_id;
+                *next_id = next_id.checked_add(1).ok_or(ArithmeticError::Overflow)?;
+                Ok(current_id)
+            })
         }
-
-        // Generate a random DNA value
-        fn gen_dna() -> [u8; 16] {
+    
+        fn random_value(sender: &T::AccountId) -> [u8; 16] {
             let payload = (
-                T::KittyRandomness::random(&b"dna"[..]).0,
-                <frame_system::Pallet<T>>::block_number(),
+                <pallet_randomness_collective_flip::Pallet<T> as Randomness<T::Hash, T::BlockNumber>>::random_seed().0,
+                &sender,
+                <frame_system::Pallet<T>>::extrinsic_index(),
             );
             payload.using_encoded(blake2_128)
-        }
-
-        // Create new DNA with existing DNA
-        pub fn breed_dna(kid1: &T::Hash, kid2: &T::Hash) -> Result<[u8; 16], Error<T>> {
-            let dna1 = Self::kitties(kid1).ok_or(<Error<T>>::KittyNotExist)?.dna;
-            let dna2 = Self::kitties(kid2).ok_or(<Error<T>>::KittyNotExist)?.dna;
-
-            let mut new_dna = Self::gen_dna();
-            for i in 0..new_dna.len() {
-                new_dna[i] = (new_dna[i] & dna1[i]) | (!new_dna[i] & dna2[i]);
-            }
-            Ok(new_dna)
         }
     }
 }
