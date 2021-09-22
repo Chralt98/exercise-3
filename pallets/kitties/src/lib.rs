@@ -29,13 +29,6 @@ impl Kitty {
     }
 }
 
-// Enum declaration for Gender.
-#[derive(Encode, Decode, Debug, Clone, PartialEq)]
-pub enum Gender {
-    Male,
-    Female,
-}
-
 #[frame_support::pallet]
 pub mod pallet {
 
@@ -150,6 +143,7 @@ pub mod pallet {
 
                 // Combine parents and selector to create new kitty
                 for i in 0..kitty1_dna.len() {
+                    // bitwise OR is "|" (Option - 7)
                     new_dna[i] = (selector[i] & kitty1_dna[i]) | (!selector[i] & kitty2_dna[i]);
                 }
 
