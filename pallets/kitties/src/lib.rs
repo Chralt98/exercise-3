@@ -8,8 +8,8 @@ use sp_runtime::ArithmeticError;
 
 #[derive(Encode, Decode, Clone, Copy, RuntimeDebug, PartialEq, Eq)]
 pub enum KittyGender {
-	Male,
-	Female,
+    Male,
+    Female,
 }
 
 // Struct for holding Kitty information.
@@ -20,13 +20,13 @@ pub enum KittyGender {
 pub struct Kitty(pub [u8; 16]);
 
 impl Kitty {
-	pub fn gender(&self) -> KittyGender {
-		if self.0[0] % 2 == 0 {
-			KittyGender::Male
-		} else {
-			KittyGender::Female
-		}
-	}
+    pub fn gender(&self) -> KittyGender {
+        if self.0[0] % 2 == 0 {
+            KittyGender::Male
+        } else {
+            KittyGender::Female
+        }
+    }
 }
 
 // Enum declaration for Gender.
@@ -34,13 +34,6 @@ impl Kitty {
 pub enum Gender {
     Male,
     Female,
-}
-
-// Implementation to handle Gender type in Kitty struct.
-impl Default for Gender {
-    fn default() -> Self {
-        Gender::Male
-    }
 }
 
 #[frame_support::pallet]
@@ -88,7 +81,6 @@ pub mod pallet {
     /// Error for the kitties pallet.
     #[pallet::error]
     pub enum Error<T> {
-        KittiesIdOverflow,
         SameGender,
         InvalidKittyId,
     }
@@ -99,12 +91,10 @@ pub mod pallet {
         #[pallet::weight(1000)]
         pub fn create(origin: OriginFor<T>) -> DispatchResult {
             let sender = ensure_signed(origin)?;
-            // TODO: ensure kitty id does not overflow
-            NextKittyId::try_mutate(|next_id| -> DispatchResult {
+
+            NextKittyId::<T>::try_mutate(|next_id| -> DispatchResult {
                 let current_id = *next_id;
-                *next_id = next_id
-                    .checked_add(1)
-                    .ok_or(Error::<T>::KittiesIdOverflow)?;
+                *next_id = next_id.checked_add(1).ok_or(ArithmeticError::Overflow)?;
 
                 // Generate a random 128bit value
                 let payload = (
@@ -126,57 +116,50 @@ pub mod pallet {
                 Self::deposit_event(Event::KittyCreated(sender, current_id, kitty));
 
                 Ok(())
-            })?;
+            })
         }
 
         /// Breed kitties
-		#[pallet::weight(1000)]
-		pub fn breed(origin: OriginFor<T>, kitty_id_1: u32, kitty_id_2: u32) -> DispatchResult {
-			let sender = ensure_signed(origin)?;
-			let kitty1 = Self::kitties(&sender, kitty_id_1).ok_or(Error::<T>::InvalidKittyId)?;
-			let kitty2 = Self::kitties(&sender, kitty_id_2).ok_or(Error::<T>::InvalidKittyId)?;
+        #[pallet::weight(1000)]
+        pub fn breed(origin: OriginFor<T>, kitty_id_1: u32, kitty_id_2: u32) -> DispatchResult {
+            let sender = ensure_signed(origin)?;
+            let kitty1 = Self::kitties(&sender, kitty_id_1).ok_or(Error::<T>::InvalidKittyId)?;
+            let kitty2 = Self::kitties(&sender, kitty_id_2).ok_or(Error::<T>::InvalidKittyId)?;
 
-			ensure!(kitty1.gender() != kitty2.gender(), Error::<T>::SameGender);
+            ensure!(kitty1.gender() != kitty2.gender(), Error::<T>::SameGender);
 
-			let kitty_id = Self::get_next_kitty_id()?;
-
-			let kitty1_dna = kitty1.0;
-			let kitty2_dna = kitty2.0;
-
-			let selector = Self::random_value(&sender);
-			let mut new_dna = [0u8; 16];
-
-			// Combine parents and selector to create new kitty
-			for i in 0..kitty1_dna.len() {
-				new_dna[i] = (selector[i] & kitty1_dna[i]) | (!selector[i] & kitty2_dna[i]);
-			}
-
-			let new_kitty = Kitty(new_dna);
-
-			Kitties::<T>::insert(&sender, kitty_id, &new_kitty);
-
-			Self::deposit_event(Event::KittyBred(sender, kitty_id, new_kitty));
-
-			Ok(())
-		}
-    }
-
-    impl<T: Config> Pallet<T> {
-        fn get_next_kitty_id() -> Result<u32, DispatchError> {
-            NextKittyId::<T>::try_mutate(|next_id| -> Result<u32, DispatchError> {
-                let current_id = *next_id;
+            NextKittyId::<T>::try_mutate(|next_id| -> DispatchResult {
+                let kitty_id = *next_id;
                 *next_id = next_id.checked_add(1).ok_or(ArithmeticError::Overflow)?;
-                Ok(current_id)
+
+                let kitty1_dna = kitty1.0;
+                let kitty2_dna = kitty2.0;
+
+                let payload = (
+                    <pallet_randomness_collective_flip::Pallet<T> as Randomness<
+                        T::Hash,
+                        T::BlockNumber,
+                    >>::random_seed()
+                    .0,
+                    &sender,
+                    <frame_system::Pallet<T>>::extrinsic_index(),
+                );
+                let selector = payload.using_encoded(blake2_128);
+
+                let mut new_dna = [0u8; 16];
+
+                // Combine parents and selector to create new kitty
+                for i in 0..kitty1_dna.len() {
+                    new_dna[i] = (selector[i] & kitty1_dna[i]) | (!selector[i] & kitty2_dna[i]);
+                }
+
+                let new_kitty = Kitty(new_dna);
+
+                Kitties::<T>::insert(&sender, kitty_id, &new_kitty);
+
+                Self::deposit_event(Event::KittyBred(sender, kitty_id, new_kitty));
+                Ok(())
             })
-        }
-    
-        fn random_value(sender: &T::AccountId) -> [u8; 16] {
-            let payload = (
-                <pallet_randomness_collective_flip::Pallet<T> as Randomness<T::Hash, T::BlockNumber>>::random_seed().0,
-                &sender,
-                <frame_system::Pallet<T>>::extrinsic_index(),
-            );
-            payload.using_encoded(blake2_128)
         }
     }
 }
