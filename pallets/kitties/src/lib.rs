@@ -21,6 +21,7 @@ pub struct Kitty(pub [u8; 16]);
 
 impl Kitty {
     pub fn gender(&self) -> KittyGender {
+        // first bit of the random byte
         if self.0[0] % 2 == 0 {
             KittyGender::Male
         } else {
